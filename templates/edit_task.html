@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Task</title>
+    <style>
+        body { max-width: 800px; margin: 0 auto; padding: 20px; }
+        textarea { width: 100%; font-family: monospace; }
+        .button { 
+            padding: 5px 10px;
+            text-decoration: none;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 3px;
+            border: none;
+            cursor: pointer;
+        }
+        label { display: block; margin-top: 10px; }
+        .schedule-type { margin: 20px 0; }
+        .schedule-options { margin-left: 20px; }
+        .schedule-type label { 
+            display: inline-block; 
+            margin-right: 10px;
+        }
+        .schedule-type input[type="radio"] {
+            margin-right: 5px;
+        }
+        .schedule-options {
+            margin: 20px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Edit Task</h1>
+    <form method="post" action="/edit/{{ task.id }}">
+        <label for="name">Task Name:</label>
+        <input type="text" id="name" name="name" required value="{{ task.name }}">
+        
+        <label for="code">Python Code:</label>
+        <textarea id="code" name="code" rows="15" required>{{ code }}</textarea>
+        
+        <div class="schedule-type">
+            <label>Schedule Type:</label><br>
+            <div>
+                <input type="radio" id="once" name="schedule_type" value="once" 
+                       {% if task.schedule_type == 'once' %}checked{% endif %} 
+                       onchange="toggleScheduleOptions()">
+                <label for="once">Once</label>
+            </div>
+            <div>
+                <input type="radio" id="daily" name="schedule_type" value="daily"
+                       {% if task.schedule_type == 'daily' %}checked{% endif %}
+                       onchange="toggleScheduleOptions()">
+                <label for="daily">Daily</label>
+            </div>
+            <div>
+                <input type="radio" id="interval" name="schedule_type" value="interval"
+                       {% if task.schedule_type == 'interval' %}checked{% endif %}
+                       onchange="toggleScheduleOptions()">
+                <label for="interval">Every N days</label>
+            </div>
+        </div>
+
+        <div id="once_options" class="schedule-options">
+            <label for="run_time">Run Time:</label>
+            <input type="datetime-local" id="run_time" name="run_time" 
+                   value="{{ task.run_time if task.schedule_type == 'once' }}">
+        </div>
+
+        <div id="daily_options" class="schedule-options" style="display: none;">
+            <label for="daily_time">Daily at:</label>
+            <input type="time" id="daily_time" name="daily_time"
+                   value="{{ task.daily_time if task.schedule_type == 'daily' }}">
+        </div>
+
+        <div id="interval_options" class="schedule-options" style="display: none;">
+            <label for="interval_days">Every N days:</label>
+            <input type="number" id="interval_days" name="interval_days" min="1" 
+                   value="{{ task.interval_days if task.schedule_type == 'interval' else 1 }}">
+            <label for="interval_time">At time:</label>
+            <input type="time" id="interval_time" name="interval_time"
+                   value="{{ task.interval_time if task.schedule_type == 'interval' }}">
+        </div>
+        
+        <br><br>
+        <button type="submit" class="button">Save Changes</button>
+    </form>
+    <br>
+    <a href="/" class="button" style="background-color: #008CBA;">Back to Task List</a>
+
+    <script>
+        function toggleScheduleOptions() {
+            const scheduleType = document.querySelector('input[name="schedule_type"]:checked').value;
+            document.getElementById('once_options').style.display = scheduleType === 'once' ? 'block' : 'none';
+            document.getElementById('daily_options').style.display = scheduleType === 'daily' ? 'block' : 'none';
+            document.getElementById('interval_options').style.display = scheduleType === 'interval' ? 'block' : 'none';
+        }
+        // Вызываем функцию при загрузке страницы
+        toggleScheduleOptions();
+    </script>
+</body>
+</html> 

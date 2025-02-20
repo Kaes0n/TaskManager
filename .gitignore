@@ -1,0 +1,19 @@
+# База данных SQLite
+taskmanager.db
+jobs.sqlite
+
+# Виртуальное окружение Python
+venv/
+__pycache__/
+
+# Логи
+*.log
+
+# IDE файлы
+.idea/
+.vscode/
+
+# Временные файлы Python
+*.pyc
+*.pyo
+*.pyd 

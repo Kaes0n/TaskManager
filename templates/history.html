@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Task History</title>
+    <style>
+        body { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { padding: 8px; text-align: left; border: 1px solid #ddd; }
+        tr:nth-child(even) { background-color: #f2f2f2; }
+        .button { 
+            padding: 5px 10px;
+            text-decoration: none;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 3px;
+            margin: 2px;
+            display: inline-block;
+        }
+        .status-completed { color: green; }
+        .status-failed { color: red; }
+        .status-running { color: orange; }
+        .output-cell {
+            max-width: 500px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .task-info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="task-info">
+        <h1>Task History: {{ task.name }}</h1>
+        <p><strong>Task ID:</strong> {{ task.id }}</p>
+        <p><strong>Current Status:</strong> {{ task.status }}</p>
+        <p><strong>Schedule:</strong> {{ task.run_time }}</p>
+    </div>
+
+    <a href="/" class="button" style="background-color: #008CBA;">Back to Task List</a>
+
+    <table>
+        <tr>
+            <th>Start Time</th>
+            <th>End Time</th>
+            <th>Status</th>
+            <th>Output/Error</th>
+        </tr>
+        {% for record in history %}
+        <tr>
+            <td>{{ record.start_time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <td>{{ record.end_time.strftime('%Y-%m-%d %H:%M:%S') if record.end_time else 'Running...' }}</td>
+            <td class="status-{{ record.status|lower }}">{{ record.status }}</td>
+            <td class="output-cell">
+                {% if record.status == 'Completed' %}
+                    {{ record.output }}
+                {% elif record.status == 'Failed' %}
+                    Error: {{ record.error }}
+                {% else %}
+                    Running...
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html> 
