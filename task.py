@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 from flask_apscheduler import APScheduler
 from datetime import datetime, timedelta
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -10,8 +10,22 @@ import json
 import logging
 
 # Версия сервиса
-VERSION = '1.2.0'  # Major.Minor.Patch
+VERSION = '1.2.3'  # Major.Minor.Patch
 # История версий:
+# 1.2.3 - Валидация полей при редактировании
+#   - Добавлена проверка пустых полей времени при смене типа задачи
+#   - Добавлены понятные сообщения об ошибках при валидации
+#   - Исправлен ValueError при изменении типа архивной задачи
+# 1.2.2 - Ручной запуск архивных задач
+#   - Добавлена кнопка "Run Now" для архивных задач
+#   - Добавлена кнопка "Edit" для архивных задач
+#   - При ручном запуске задача остаётся в своём текущем состоянии (активная/архивная)
+#   - При автоматическом выполнении Once задачи архивируются как раньше
+#   - Исправлена ошибка JobLookupError в планировщике
+# 1.2.1 - Улучшена разархивация задач
+#   - Once задачи с прошедшим временем теперь перенаправляются на редактирование
+#   - Добавлены flash-сообщения для уведомлений
+#   - Пользователь может указать новое время для устаревших задач
 # 1.2.0 - Добавлена дата окончания задач
 #   - Опциональная настройка даты окончания для Daily и Interval типов
 #   - Once задачи не имеют end_date (выполняются один раз и архивируются)
@@ -40,6 +54,7 @@ app = Flask(__name__)
 db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'taskmanager.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
 db = SQLAlchemy(app)
 
 # Модель для хранения истории выполнения задач
@@ -166,9 +181,34 @@ if not app.config.get('TESTING'):
     with app.app_context():
         db.create_all()
 
+    # Настраиваем параметры планировщика по умолчанию
+    from apscheduler.executors.pool import ThreadPoolExecutor
+    scheduler.scheduler.configure(
+        job_defaults={
+            'coalesce': True,  # Объединять пропущенные выполнения в одно
+            'max_instances': 1,  # Не допускать параллельного выполнения одной задачи
+            'misfire_grace_time': 3600  # Время ожидания для пропущенных задач (1 час)
+        },
+        executors={
+            'default': ThreadPoolExecutor(20)
+        }
+    )
+
     # Запускаем планировщик после создания таблиц
     scheduler.start()
 
+    # Добавляем обработчик для подавления ошибок JobLookupError в потоке планировщика
+    import logging
+    original_remove_job = scheduler.scheduler.remove_job
+
+    def remove_job_safe(job_id, jobstore=None):
+        try:
+            return original_remove_job(job_id, jobstore)
+        except JobLookupError:
+            logging.debug(f'Job {job_id} not found in scheduler (already removed)')
+            # Игнорируем ошибку, задача уже удалена
+
+    scheduler.scheduler.remove_job = remove_job_safe
 logging.basicConfig(filename='task_manager.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 
 TASKS_DIR = 'tasks'
@@ -288,7 +328,12 @@ def create_task():
 def run_task(task_id):
     task = db.session.get(Task, task_id)
     if task:
-        execute_task(task_id)
+        # Ручной запуск - передаем manual=True
+        execute_task(task_id, manual=True)
+        if task.is_active:
+            flash(f'✅ Задача "{task.name}" успешно запущена!', 'success')
+        else:
+            flash(f'✅ Архивная задача "{task.name}" успешно запущена (остаётся в архиве)', 'success')
     return redirect(url_for('index'))
 
 @app.route('/delete/<task_id>')
@@ -336,14 +381,14 @@ def unarchive_task(task_id):
     if not task:
         return redirect(url_for('index'))
 
-    task.is_active = True
-
     # Восстанавливаем задачу в планировщике
     try:
         if task.schedule_type == 'once':
             # Проверяем, не прошло ли время выполнения
             run_time = datetime.strptime(task.run_time, '%Y-%m-%dT%H:%M')
             if run_time > datetime.now():
+                # Время не прошло - восстанавливаем задачу
+                task.is_active = True
                 scheduler.add_job(
                     id=task.id,
                     func=execute_task,
@@ -351,11 +396,16 @@ def unarchive_task(task_id):
                     trigger='date',
                     run_date=run_time
                 )
+                db.session.commit()
+                logging.info(f'Task {task_id} unarchived')
+                return redirect(url_for('index'))
             else:
-                # Если время прошло, оставляем в архиве
-                task.is_active = False
-                logging.warning(f'Cannot unarchive task {task_id}: time has passed')
+                # Время прошло - перенаправляем на редактирование
+                flash(f'⚠️ Время выполнения задачи "{task.name}" уже прошло. Укажите новое время для разархивации.', 'warning')
+                logging.info(f'Task {task_id} unarchive attempt: time has passed, redirecting to edit')
+                return redirect(url_for('edit_task', task_id=task_id))
         elif task.schedule_type == 'daily':
+            task.is_active = True
             hour, minute = map(int, task.daily_time.split(':'))
             job_kwargs = {
                 'id': task.id,
@@ -370,6 +420,7 @@ def unarchive_task(task_id):
                 job_kwargs['end_date'] = task.end_date
             scheduler.add_job(**job_kwargs)
         elif task.schedule_type == 'interval':
+            task.is_active = True
             hour, minute = map(int, task.interval_time.split(':'))
             now = datetime.now()
             start_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -434,6 +485,12 @@ def edit_task(task_id):
         # Обновляем базовую информацию
         task.name = request.form['name']
 
+        # Запоминаем, была ли задача в архиве
+        was_archived = not task.is_active
+
+        # Активируем задачу при редактировании (если она была в архиве)
+        task.is_active = True
+
         # Обрабатываем end_date (опциональное поле)
         end_date = None
         end_date_str = request.form.get('end_date', '').strip()
@@ -466,7 +523,11 @@ def edit_task(task_id):
 
         # Обновляем расписание
         if new_schedule_type == 'once':
-            run_time = request.form['run_time']
+            run_time = request.form.get('run_time', '').strip()
+            if not run_time:
+                flash('❌ Не указано время выполнения. Пожалуйста, выберите дату и время для однократной задачи.', 'error')
+                return redirect(url_for('edit_task', task_id=task_id))
+
             task.run_time = run_time
             task.schedule_type = 'once'
             scheduler.add_job(
@@ -479,7 +540,11 @@ def edit_task(task_id):
             logging.info(f'Task {task.name} rescheduled for {run_time}')
 
         elif new_schedule_type == 'daily':
-            daily_time = request.form['daily_time']
+            daily_time = request.form.get('daily_time', '').strip()
+            if not daily_time:
+                flash('❌ Не указано время выполнения. Пожалуйста, заполните поле времени для ежедневной задачи.', 'error')
+                return redirect(url_for('edit_task', task_id=task_id))
+
             hour, minute = map(int, daily_time.split(':'))
             task.run_time = f'Daily at {daily_time}'
             task.schedule_type = 'daily'
@@ -499,8 +564,22 @@ def edit_task(task_id):
             logging.info(f'Task {task.name} rescheduled daily at {daily_time}' + (f' until {task.end_date}' if task.end_date else ''))
 
         elif new_schedule_type == 'interval':
-            interval_days = int(request.form['interval_days'])
-            interval_time = request.form['interval_time']
+            interval_days_str = request.form.get('interval_days', '1').strip()
+            if not interval_days_str:
+                interval_days = 1
+            else:
+                try:
+                    interval_days = int(interval_days_str)
+                    if interval_days < 1:
+                        interval_days = 1
+                except ValueError:
+                    interval_days = 1
+
+            interval_time = request.form.get('interval_time', '').strip()
+            if not interval_time:
+                flash('❌ Не указано время выполнения. Пожалуйста, заполните поле времени для интервальной задачи.', 'error')
+                return redirect(url_for('edit_task', task_id=task_id))
+
             hour, minute = map(int, interval_time.split(':'))
             task.run_time = f'Every {interval_days} days at {interval_time}'
             task.schedule_type = 'interval'
@@ -527,6 +606,13 @@ def edit_task(task_id):
             logging.info(f'Task {task.name} rescheduled every {interval_days} days at {interval_time}' + (f' until {task.end_date}' if task.end_date else ''))
 
         db.session.commit()
+
+        # Проверяем, была ли задача в архиве до редактирования
+        if was_archived:
+            flash(f'✅ Задача "{task.name}" успешно активирована и восстановлена из архива!', 'success')
+        else:
+            flash(f'✅ Задача "{task.name}" успешно обновлена!', 'success')
+
         return redirect(url_for('index'))
 
     # Получаем код задачи для отображения в форме
@@ -535,7 +621,14 @@ def edit_task(task_id):
 
     return render_template('edit_task.html', task=task, code=code)
 
-def execute_task(task_id):
+def execute_task(task_id, manual=False):
+    """
+    Выполняет задачу.
+
+    Args:
+        task_id: ID задачи
+        manual: True если запуск ручной, False если по расписанию
+    """
     with app.app_context():
         task = db.session.get(Task, task_id)
         if not task:
@@ -577,10 +670,11 @@ def execute_task(task_id):
             history_record.output = output
             logging.info(f'Task {task.name} completed successfully')
 
-            # Автоматически архивируем одноразовые задачи после выполнения
-            if task.schedule_type == 'once':
+            # Автоматически архивируем одноразовые задачи только после выполнения по расписанию
+            # При ручном запуске оставляем задачу в текущем состоянии
+            if task.schedule_type == 'once' and not manual:
                 task.is_active = False
-                logging.info(f'Task {task.name} (once) archived after completion')
+                logging.info(f'Task {task.name} (once) archived after scheduled execution')
         except Exception as e:
             task.status = 'Failed'
             history_record.status = 'Failed'
