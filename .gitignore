@@ -1,6 +1,6 @@
 # База данных SQLite
 taskmanager.db
-jobs.sqlite
+# jobs.sqlite больше не используется (объединена с taskmanager.db)
 
 # Виртуальное окружение Python
 venv/
@@ -16,4 +16,11 @@ __pycache__/
 # Временные файлы Python
 *.pyc
 *.pyo
-*.pyd 
+*.pyd
+
+# Артефакты тестирования
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.pytest_cache/ 

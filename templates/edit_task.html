@@ -67,25 +67,45 @@
 
         <div id="once_options" class="schedule-options">
             <label for="run_time">Run Time:</label>
-            <input type="datetime-local" id="run_time" name="run_time" 
+            <input type="datetime-local" id="run_time" name="run_time"
                    value="{{ task.run_time if task.schedule_type == 'once' }}">
+            <small style="color: #999; display: block; margin-top: 5px;">
+                Once tasks don't need an end date - they run once and are archived.
+            </small>
         </div>
 
         <div id="daily_options" class="schedule-options" style="display: none;">
             <label for="daily_time">Daily at:</label>
             <input type="time" id="daily_time" name="daily_time"
                    value="{{ task.daily_time if task.schedule_type == 'daily' }}">
+            <br><br>
+            <label for="daily_end_date">End Date (optional):</label>
+            {% if task.end_date and task.schedule_type == 'daily' %}
+            <input type="datetime-local" id="daily_end_date" name="end_date"
+                   value="{{ task.end_date.strftime('%Y-%m-%dT%H:%M') }}">
+            {% else %}
+            <input type="datetime-local" id="daily_end_date" name="end_date">
+            {% endif %}
         </div>
 
         <div id="interval_options" class="schedule-options" style="display: none;">
             <label for="interval_days">Every N days:</label>
-            <input type="number" id="interval_days" name="interval_days" min="1" 
+            <input type="number" id="interval_days" name="interval_days" min="1"
                    value="{{ task.interval_days if task.schedule_type == 'interval' else 1 }}">
+            <br><br>
             <label for="interval_time">At time:</label>
             <input type="time" id="interval_time" name="interval_time"
                    value="{{ task.interval_time if task.schedule_type == 'interval' }}">
+            <br><br>
+            <label for="interval_end_date">End Date (optional):</label>
+            {% if task.end_date and task.schedule_type == 'interval' %}
+            <input type="datetime-local" id="interval_end_date" name="end_date"
+                   value="{{ task.end_date.strftime('%Y-%m-%dT%H:%M') }}">
+            {% else %}
+            <input type="datetime-local" id="interval_end_date" name="end_date">
+            {% endif %}
         </div>
-        
+
         <br><br>
         <button type="submit" class="button">Save Changes</button>
     </form>

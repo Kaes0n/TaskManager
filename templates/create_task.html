@@ -71,15 +71,28 @@
         <div id="daily_options" class="schedule-options" style="display: none;">
             <label for="daily_time">Daily at:</label>
             <input type="time" id="daily_time" name="daily_time">
+            <br><br>
+            <label for="daily_end_date">End Date (optional):</label>
+            <input type="datetime-local" id="daily_end_date" name="end_date">
+            <small style="color: #666; display: block; margin-top: 5px;">
+                Task will stop running after this date. Leave empty for no end date.
+            </small>
         </div>
 
         <div id="interval_options" class="schedule-options" style="display: none;">
             <label for="interval_days">Every N days:</label>
             <input type="number" id="interval_days" name="interval_days" min="1" value="1">
+            <br><br>
             <label for="interval_time">At time:</label>
             <input type="time" id="interval_time" name="interval_time">
+            <br><br>
+            <label for="interval_end_date">End Date (optional):</label>
+            <input type="datetime-local" id="interval_end_date" name="end_date">
+            <small style="color: #666; display: block; margin-top: 5px;">
+                Task will stop running after this date. Leave empty for no end date.
+            </small>
         </div>
-        
+
         <br><br>
         <button type="submit" class="button">Create Task</button>
     </form>

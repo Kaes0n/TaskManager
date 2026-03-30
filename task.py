@@ -10,8 +10,23 @@ import json
 import logging
 
 # Версия сервиса
-VERSION = '1.0.0'  # Major.Minor.Patch
+VERSION = '1.2.0'  # Major.Minor.Patch
 # История версий:
+# 1.2.0 - Добавлена дата окончания задач
+#   - Опциональная настройка даты окончания для Daily и Interval типов
+#   - Once задачи не имеют end_date (выполняются один раз и архивируются)
+#   - Задачи автоматически перестают выполняться после достижения end_date
+#   - Добавлено отображение end_date в таблице задач
+#   - Обновлены формы создания и редактирования задач
+#   - Исправлен порядок определения функций (execute_task до restore_tasks)
+#   - 23 unit-теста (включая тесты для end_date)
+# 1.1.0 - Система архивации и оптимизация БД
+#   - Добавлено разделение на активные и архивированные задачи
+#   - Автоматическая архивация одноразовых задач после выполнения
+#   - Фильтры: Все/Активные/Архив
+#   - Ручное архивирование/разархивирование задач
+#   - Объединение баз данных (taskmanager.db вместо taskmanager.db + jobs.sqlite)
+#   - 16 unit-тестов для проверки функциональности
 # 1.0.0 - Первая стабильная версия
 #   - Создание, редактирование, удаление задач
 #   - Поддержка разных типов расписания (однократное, ежедневное, интервальное)
@@ -21,7 +36,9 @@ VERSION = '1.0.0'  # Major.Minor.Patch
 
 app = Flask(__name__)
 # Конфигурация базы данных
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///taskmanager.db'
+# Используем абсолютный путь, чтобы Flask не создавал директорию instance/
+db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'taskmanager.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
@@ -61,6 +78,10 @@ class Task(db.Model):
     daily_time = db.Column(db.String(10), nullable=True)
     interval_days = db.Column(db.Integer, nullable=True)
     interval_time = db.Column(db.String(10), nullable=True)
+    # Поле для архивации: True - активная, False - в архиве
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    # Опциональная дата окончания действия задачи
+    end_date = db.Column(db.DateTime, nullable=True)
 
     def to_dict(self):
         return {
@@ -72,7 +93,9 @@ class Task(db.Model):
             'path': self.path,
             'daily_time': self.daily_time,
             'interval_days': self.interval_days,
-            'interval_time': self.interval_time
+            'interval_time': self.interval_time,
+            'is_active': self.is_active,
+            'end_date': self.end_date.strftime('%Y-%m-%d %H:%M') if self.end_date else None
         }
     
 def restore_tasks():
@@ -94,39 +117,57 @@ def restore_tasks():
                         )
                 elif task.schedule_type == 'daily':
                     hour, minute = map(int, task.daily_time.split(':'))
-                    scheduler.add_job(
-                        id=task.id,
-                        func=execute_task,
-                        args=[task.id],
-                        trigger='cron',
-                        hour=hour,
-                        minute=minute
-                    )
+                    job_kwargs = {
+                        'id': task.id,
+                        'func': execute_task,
+                        'args': [task.id],
+                        'trigger': 'cron',
+                        'hour': hour,
+                        'minute': minute
+                    }
+                    # Добавляем end_date если указан
+                    if task.end_date:
+                        job_kwargs['end_date'] = task.end_date
+                    scheduler.add_job(**job_kwargs)
                 elif task.schedule_type == 'interval':
                     hour, minute = map(int, task.interval_time.split(':'))
-                    scheduler.add_job(
-                        id=task.id,
-                        func=execute_task,
-                        args=[task.id],
-                        trigger='interval',
-                        days=task.interval_days,
-                        start_date=datetime.now().replace(hour=hour, minute=minute)
-                    )
+                    # Вычисляем правильное время запуска
+                    now = datetime.now()
+                    start_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    # Если время уже прошло, добавляем один день
+                    if start_date <= now:
+                        start_date += timedelta(days=1)
+                    job_kwargs = {
+                        'id': task.id,
+                        'func': execute_task,
+                        'args': [task.id],
+                        'trigger': 'interval',
+                        'days': task.interval_days,
+                        'start_date': start_date
+                    }
+                    # Добавляем end_date если указан
+                    if task.end_date:
+                        job_kwargs['end_date'] = task.end_date
+                    scheduler.add_job(**job_kwargs)
             except Exception as e:
                 logging.error(f'Error restoring task {task.id}: {str(e)}')
 
 # Инициализация планировщика
 scheduler = APScheduler()
 scheduler.init_app(app)
-scheduler.scheduler.add_jobstore(SQLAlchemyJobStore(url='sqlite:///jobs.sqlite'), 'default')
 
-# Создаем таблицы и восстанавливаем задачи
-with app.app_context():
-    db.create_all()
-    
-# Запускаем планировщик после создания таблиц
-scheduler.start()
-restore_tasks()  # Восстанавливаем задачи после запуска планировщика
+# Инициализируем scheduler только если не в режиме тестирования
+# В тестах scheduler будет мокаться, чтобы не создавать файлы БД
+if not app.config.get('TESTING'):
+    # Используем ту же базу данных, что и для Flask-SQLAlchemy
+    scheduler.scheduler.add_jobstore(SQLAlchemyJobStore(url=f'sqlite:///{db_path}'), 'default')
+
+    # Создаем таблицы
+    with app.app_context():
+        db.create_all()
+
+    # Запускаем планировщик после создания таблиц
+    scheduler.start()
 
 logging.basicConfig(filename='task_manager.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 
@@ -134,9 +175,18 @@ TASKS_DIR = 'tasks'
 os.makedirs(TASKS_DIR, exist_ok=True)
 
 @app.route('/')
-def index():
-    tasks_list = Task.query.all()
-    return render_template('index.html', tasks=tasks_list, version=VERSION)
+@app.route('/filter/<filter_type>')
+def index(filter_type='all'):
+    query = Task.query
+
+    # Применяем фильтрацию
+    if filter_type == 'active':
+        query = query.filter_by(is_active=True)
+    elif filter_type == 'archive':
+        query = query.filter_by(is_active=False)
+
+    tasks_list = query.all()
+    return render_template('index.html', tasks=tasks_list, version=VERSION, filter_type=filter_type)
 
 @app.route('/create', methods=['GET', 'POST'])
 def create_task():
@@ -146,23 +196,34 @@ def create_task():
         # Удаляем лишние пробелы и переносы строк
         code = request.form['code'].strip()
         schedule_type = request.form['schedule_type']
-        
+
+        # Обрабатываем end_date (опциональное поле)
+        end_date = None
+        end_date_str = request.form.get('end_date', '').strip()
+        if end_date_str:
+            try:
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%dT%H:%M')
+            except ValueError:
+                pass  # Если формат неверный, игнорируем
+
         task_path = os.path.join(TASKS_DIR, f'{task_id}.py')
         # Используем newline='' при записи
         with open(task_path, 'w', newline='') as f:
             f.write(code)
-        
+
         task = Task(
             id=task_id,
             name=task_name,
             status='Scheduled',
             schedule_type=schedule_type,
-            path=task_path
+            path=task_path,
+            end_date=end_date
         )
 
         if schedule_type == 'once':
             run_time = request.form['run_time']
             task.run_time = run_time
+            # Для одноразовых задач end_date не имеет смысла, но можно добавить для информации
             scheduler.add_job(
                 id=task_id,
                 func=execute_task,
@@ -177,15 +238,19 @@ def create_task():
             hour, minute = map(int, daily_time.split(':'))
             task.run_time = f'Daily at {daily_time}'
             task.daily_time = daily_time
-            scheduler.add_job(
-                id=task_id,
-                func=execute_task,
-                args=[task_id],
-                trigger='cron',
-                hour=hour,
-                minute=minute
-            )
-            logging.info(f'Task {task_name} scheduled daily at {daily_time}')
+            job_kwargs = {
+                'id': task_id,
+                'func': execute_task,
+                'args': [task_id],
+                'trigger': 'cron',
+                'hour': hour,
+                'minute': minute
+            }
+            # Добавляем end_date если указан
+            if end_date:
+                job_kwargs['end_date'] = end_date
+            scheduler.add_job(**job_kwargs)
+            logging.info(f'Task {task_name} scheduled daily at {daily_time}' + (f' until {end_date}' if end_date else ''))
 
         elif schedule_type == 'interval':
             interval_days = int(request.form['interval_days'])
@@ -194,15 +259,25 @@ def create_task():
             task.run_time = f'Every {interval_days} days at {interval_time}'
             task.interval_days = interval_days
             task.interval_time = interval_time
-            scheduler.add_job(
-                id=task_id,
-                func=execute_task,
-                args=[task_id],
-                trigger='interval',
-                days=interval_days,
-                start_date=datetime.now().replace(hour=hour, minute=minute)
-            )
-            logging.info(f'Task {task_name} scheduled every {interval_days} days at {interval_time}')
+            # Вычисляем правильное время запуска
+            now = datetime.now()
+            start_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # Если время уже прошло, добавляем один день
+            if start_date <= now:
+                start_date += timedelta(days=1)
+            job_kwargs = {
+                'id': task_id,
+                'func': execute_task,
+                'args': [task_id],
+                'trigger': 'interval',
+                'days': interval_days,
+                'start_date': start_date
+            }
+            # Добавляем end_date если указан
+            if end_date:
+                job_kwargs['end_date'] = end_date
+            scheduler.add_job(**job_kwargs)
+            logging.info(f'Task {task_name} scheduled every {interval_days} days at {interval_time}' + (f' until {end_date}' if end_date else ''))
 
         db.session.add(task)
         db.session.commit()
@@ -224,19 +299,100 @@ def delete_task(task_id):
             scheduler.remove_job(task_id)
         except JobLookupError:
             logging.warning(f'Job {task_id} not found in scheduler')
-        
+
         try:
             os.remove(task.path)
         except FileNotFoundError:
             logging.warning(f'File for task {task_id} not found')
-        
+
         # Удаляем историю задачи
         TaskHistory.query.filter_by(task_id=task_id).delete()
         # Удаляем саму задачу
         db.session.delete(task)
         db.session.commit()
-        
+
         logging.info(f'Task {task_id} deleted')
+    return redirect(url_for('index'))
+
+@app.route('/archive/<task_id>')
+def archive_task(task_id):
+    """Архивирует задачу (переносит в неактивные)"""
+    task = db.session.get(Task, task_id)
+    if task:
+        try:
+            scheduler.remove_job(task_id)
+        except JobLookupError:
+            logging.warning(f'Job {task_id} not found in scheduler')
+
+        task.is_active = False
+        db.session.commit()
+        logging.info(f'Task {task_id} archived')
+    return redirect(url_for('index'))
+
+@app.route('/unarchive/<task_id>')
+def unarchive_task(task_id):
+    """Разархивирует задачу (восстанавливает в активные)"""
+    task = db.session.get(Task, task_id)
+    if not task:
+        return redirect(url_for('index'))
+
+    task.is_active = True
+
+    # Восстанавливаем задачу в планировщике
+    try:
+        if task.schedule_type == 'once':
+            # Проверяем, не прошло ли время выполнения
+            run_time = datetime.strptime(task.run_time, '%Y-%m-%dT%H:%M')
+            if run_time > datetime.now():
+                scheduler.add_job(
+                    id=task.id,
+                    func=execute_task,
+                    args=[task.id],
+                    trigger='date',
+                    run_date=run_time
+                )
+            else:
+                # Если время прошло, оставляем в архиве
+                task.is_active = False
+                logging.warning(f'Cannot unarchive task {task_id}: time has passed')
+        elif task.schedule_type == 'daily':
+            hour, minute = map(int, task.daily_time.split(':'))
+            job_kwargs = {
+                'id': task.id,
+                'func': execute_task,
+                'args': [task.id],
+                'trigger': 'cron',
+                'hour': hour,
+                'minute': minute
+            }
+            # Добавляем end_date если указан
+            if task.end_date:
+                job_kwargs['end_date'] = task.end_date
+            scheduler.add_job(**job_kwargs)
+        elif task.schedule_type == 'interval':
+            hour, minute = map(int, task.interval_time.split(':'))
+            now = datetime.now()
+            start_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if start_date <= now:
+                start_date += timedelta(days=1)
+            job_kwargs = {
+                'id': task.id,
+                'func': execute_task,
+                'args': [task.id],
+                'trigger': 'interval',
+                'days': task.interval_days,
+                'start_date': start_date
+            }
+            # Добавляем end_date если указан
+            if task.end_date:
+                job_kwargs['end_date'] = task.end_date
+            scheduler.add_job(**job_kwargs)
+    except Exception as e:
+        logging.error(f'Error unarchiving task {task_id}: {str(e)}')
+        task.is_active = False
+
+    db.session.commit()
+    logging.info(f'Task {task_id} unarchived')
     return redirect(url_for('index'))
 
 @app.route('/import', methods=['POST'])
@@ -273,25 +429,41 @@ def edit_task(task_id):
     task = db.session.get(Task, task_id)
     if not task:
         return redirect(url_for('index'))
-    
+
     if request.method == 'POST':
         # Обновляем базовую информацию
         task.name = request.form['name']
-        
+
+        # Обрабатываем end_date (опциональное поле)
+        end_date = None
+        end_date_str = request.form.get('end_date', '').strip()
+        if end_date_str:
+            try:
+                end_date = datetime.strptime(end_date_str, '%Y-%m-%dT%H:%M')
+            except ValueError:
+                pass  # Если формат неверный, оставляем старое значение
+            if not end_date:
+                # Если поле пустое, удаляем end_date
+                task.end_date = None
+            else:
+                task.end_date = end_date
+        else:
+            task.end_date = None
+
         # Сохраняем новый код, удаляя лишние пустые строки
         code = request.form['code'].strip()  # Удаляем пробелы в начале и конце
         with open(task.path, 'w', newline='') as f:  # Добавляем newline=''
             f.write(code)
-        
+
         # Получаем новый тип расписания
         new_schedule_type = request.form['schedule_type']
-        
+
         # Если тип расписания изменился или параметры расписания обновились
         try:
             scheduler.remove_job(task_id)
         except JobLookupError:
             logging.warning(f'Job {task_id} not found in scheduler when updating')
-        
+
         # Обновляем расписание
         if new_schedule_type == 'once':
             run_time = request.form['run_time']
@@ -312,15 +484,19 @@ def edit_task(task_id):
             task.run_time = f'Daily at {daily_time}'
             task.schedule_type = 'daily'
             task.daily_time = daily_time
-            scheduler.add_job(
-                id=task_id,
-                func=execute_task,
-                args=[task_id],
-                trigger='cron',
-                hour=hour,
-                minute=minute
-            )
-            logging.info(f'Task {task.name} rescheduled daily at {daily_time}')
+            job_kwargs = {
+                'id': task_id,
+                'func': execute_task,
+                'args': [task_id],
+                'trigger': 'cron',
+                'hour': hour,
+                'minute': minute
+            }
+            # Добавляем end_date если указан
+            if task.end_date:
+                job_kwargs['end_date'] = task.end_date
+            scheduler.add_job(**job_kwargs)
+            logging.info(f'Task {task.name} rescheduled daily at {daily_time}' + (f' until {task.end_date}' if task.end_date else ''))
 
         elif new_schedule_type == 'interval':
             interval_days = int(request.form['interval_days'])
@@ -330,23 +506,33 @@ def edit_task(task_id):
             task.schedule_type = 'interval'
             task.interval_days = interval_days
             task.interval_time = interval_time
-            scheduler.add_job(
-                id=task_id,
-                func=execute_task,
-                args=[task_id],
-                trigger='interval',
-                days=interval_days,
-                start_date=datetime.now().replace(hour=hour, minute=minute)
-            )
-            logging.info(f'Task {task.name} rescheduled every {interval_days} days at {interval_time}')
-        
+            # Вычисляем правильное время запуска
+            now = datetime.now()
+            start_date = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # Если время уже прошло, добавляем один день
+            if start_date <= now:
+                start_date += timedelta(days=1)
+            job_kwargs = {
+                'id': task_id,
+                'func': execute_task,
+                'args': [task_id],
+                'trigger': 'interval',
+                'days': interval_days,
+                'start_date': start_date
+            }
+            # Добавляем end_date если указан
+            if task.end_date:
+                job_kwargs['end_date'] = task.end_date
+            scheduler.add_job(**job_kwargs)
+            logging.info(f'Task {task.name} rescheduled every {interval_days} days at {interval_time}' + (f' until {task.end_date}' if task.end_date else ''))
+
         db.session.commit()
         return redirect(url_for('index'))
-    
+
     # Получаем код задачи для отображения в форме
     with open(task.path, 'r', newline='') as f:  # Добавляем newline=''
         code = f.read().strip()  # Удаляем лишние пробелы в начале и конце
-    
+
     return render_template('edit_task.html', task=task, code=code)
 
 def execute_task(task_id):
@@ -385,17 +571,22 @@ def execute_task(task_id):
             # Восстанавливаем стандартный вывод и получаем результат
             sys.stdout = old_stdout
             output = redirected_output.getvalue()
-            
+
             task.status = 'Completed'
             history_record.status = 'Completed'
             history_record.output = output
             logging.info(f'Task {task.name} completed successfully')
+
+            # Автоматически архивируем одноразовые задачи после выполнения
+            if task.schedule_type == 'once':
+                task.is_active = False
+                logging.info(f'Task {task.name} (once) archived after completion')
         except Exception as e:
             task.status = 'Failed'
             history_record.status = 'Failed'
             history_record.error = str(e)
             logging.error(f'Task {task.name} failed: {str(e)}')
-        
+
         history_record.end_time = datetime.now()
         db.session.commit()
 
@@ -419,6 +610,9 @@ def cleanup_old_history():
     TaskHistory.query.filter(TaskHistory.start_time < thirty_days_ago).delete()
     db.session.commit()
 
+# Восстанавливаем задачи из БД при запуске (вызывается после определения execute_task)
+if not app.config.get('TESTING'):
+    restore_tasks()
 
 if __name__ == '__main__':
     host = '127.0.0.1'
