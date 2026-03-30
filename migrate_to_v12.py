@@ -35,35 +35,63 @@ def migrate_database(db_path='taskmanager.db', backup=True):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Проверяем текущую версию схемы
-        cursor.execute("PRAGMA table_info(tasks)")
-        columns = [row[1] for row in cursor.fetchall()]
+        # Проверяем, существует ли таблица tasks
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='tasks'
+        """)
+        table_exists = cursor.fetchone()
 
-        print(f"📋 Текущие колонки в таблице tasks: {columns}")
-
-        # Миграция 1.1.0: Добавляем поле is_active
-        if 'is_active' not in columns:
-            print("🔄 Миграция 1.1.0: Добавление поля is_active...")
+        if not table_exists:
+            print("⚠️  Таблица tasks не найдена!")
+            print("🔄 Создание таблицы tasks с полной структурой...")
             cursor.execute("""
-                ALTER TABLE tasks
-                ADD COLUMN is_active BOOLEAN DEFAULT 1 NOT NULL
+                CREATE TABLE tasks (
+                    id VARCHAR(50) PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL,
+                    status VARCHAR(20) NOT NULL,
+                    schedule_type VARCHAR(20) NOT NULL,
+                    run_time VARCHAR(100) NOT NULL,
+                    path VARCHAR(200) NOT NULL,
+                    daily_time VARCHAR(10),
+                    interval_days INTEGER,
+                    interval_time VARCHAR(10),
+                    is_active BOOLEAN DEFAULT 1 NOT NULL,
+                    end_date DATETIME
+                )
             """)
-            # Обновляем существующие записи
-            cursor.execute("UPDATE tasks SET is_active = 1 WHERE is_active IS NULL")
-            print("✅ Поле is_active добавлено")
+            print("✅ Таблица tasks создана с полной структурой версии 1.2.0")
+            print("⚠️  ВНИМАНИЕ: Таблица была пустой, данные не перенесены")
         else:
-            print("ℹ️  Поле is_active уже существует")
+            # Таблица существует - проверяем текущую версию схемы
+            cursor.execute("PRAGMA table_info(tasks)")
+            columns = [row[1] for row in cursor.fetchall()]
 
-        # Миграция 1.2.0: Добавляем поле end_date
-        if 'end_date' not in columns:
-            print("🔄 Миграция 1.2.0: Добавление поля end_date...")
-            cursor.execute("""
-                ALTER TABLE tasks
-                ADD COLUMN end_date DATETIME
-            """)
-            print("✅ Поле end_date добавлено")
-        else:
-            print("ℹ️  Поле end_date уже существует")
+            print(f"📋 Текущие колонки в таблице tasks: {columns}")
+
+            # Миграция 1.1.0: Добавляем поле is_active
+            if 'is_active' not in columns:
+                print("🔄 Миграция 1.1.0: Добавление поля is_active...")
+                cursor.execute("""
+                    ALTER TABLE tasks
+                    ADD COLUMN is_active BOOLEAN DEFAULT 1 NOT NULL
+                """)
+                # Обновляем существующие записи
+                cursor.execute("UPDATE tasks SET is_active = 1 WHERE is_active IS NULL")
+                print("✅ Поле is_active добавлено")
+            else:
+                print("ℹ️  Поле is_active уже существует")
+
+            # Миграция 1.2.0: Добавляем поле end_date
+            if 'end_date' not in columns:
+                print("🔄 Миграция 1.2.0: Добавление поля end_date...")
+                cursor.execute("""
+                    ALTER TABLE tasks
+                    ADD COLUMN end_date DATETIME
+                """)
+                print("✅ Поле end_date добавлено")
+            else:
+                print("ℹ️  Поле end_date уже существует")
 
         # Проверяем и добавляем таблицу alembic_version если нужно (для APScheduler)
         cursor.execute("""
